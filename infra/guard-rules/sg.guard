@@ -1,0 +1,28 @@
+# forge guard rules: security groups
+
+let sgs = Resources.*[ Type == 'AWS::EC2::SecurityGroup' ]
+let sg_ingress = Resources.*[ Type == 'AWS::EC2::SecurityGroupIngress' ]
+
+# sg-no-open-admin: PCI DSS 1.2, NIST 800-53 SC-7
+# No SSH (22), RDP (3389) or all-traffic rule to the world, inline or standalone.
+rule sg_no_open_admin_inline when %sgs !empty {
+    let open = %sgs.Properties.SecurityGroupIngress[ CidrIp == "0.0.0.0/0" or CidrIpv6 == "::/0" ]
+    when %open !empty {
+        %open {
+            FromPort != 22 <<sg-no-open-admin: port 22 open to the world (PCI DSS 1.2, NIST SC-7)>>
+            FromPort != 3389 <<sg-no-open-admin: port 3389 open to the world (PCI DSS 1.2, NIST SC-7)>>
+            IpProtocol != "-1" <<sg-no-open-admin: all protocols open to the world (PCI DSS 1.2, NIST SC-7)>>
+        }
+    }
+}
+
+rule sg_no_open_admin_standalone when %sg_ingress !empty {
+    let open = %sg_ingress.Properties[ CidrIp == "0.0.0.0/0" or CidrIpv6 == "::/0" ]
+    when %open !empty {
+        %open {
+            FromPort != 22 <<sg-no-open-admin: port 22 open to the world (PCI DSS 1.2, NIST SC-7)>>
+            FromPort != 3389 <<sg-no-open-admin: port 3389 open to the world (PCI DSS 1.2, NIST SC-7)>>
+            IpProtocol != "-1" <<sg-no-open-admin: all protocols open to the world (PCI DSS 1.2, NIST SC-7)>>
+        }
+    }
+}

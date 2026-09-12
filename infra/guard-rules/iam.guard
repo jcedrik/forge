@@ -1,0 +1,33 @@
+# forge guard rules: IAM
+
+let roles = Resources.*[ Type == 'AWS::IAM::Role' ]
+let policies = Resources.*[ Type == 'AWS::IAM::Policy' or Type == 'AWS::IAM::ManagedPolicy' ]
+
+# iam-no-wildcard: NIST 800-53 AC-6, ISO 27001 A.9.2
+rule iam_no_wildcard_inline when %roles !empty {
+    let stmts = %roles.Properties.Policies[*].PolicyDocument.Statement[ Effect == "Allow" ]
+    when %stmts !empty {
+        %stmts {
+            Action != "*" <<iam-no-wildcard: Action "*" is an admin grant (NIST AC-6, ISO 27001 A.9.2)>>
+            Action[*] != "*" <<iam-no-wildcard: Action "*" is an admin grant (NIST AC-6, ISO 27001 A.9.2)>>
+        }
+    }
+}
+
+rule iam_no_wildcard_standalone when %policies !empty {
+    let stmts = %policies.Properties.PolicyDocument.Statement[ Effect == "Allow" ]
+    when %stmts !empty {
+        %stmts {
+            Action != "*" <<iam-no-wildcard: Action "*" is an admin grant (NIST AC-6, ISO 27001 A.9.2)>>
+            Action[*] != "*" <<iam-no-wildcard: Action "*" is an admin grant (NIST AC-6, ISO 27001 A.9.2)>>
+        }
+    }
+}
+
+# Companion: AdministratorAccess may not be attached to any role.
+rule iam_no_admin_managed_policy when %roles !empty {
+    let attached = %roles.Properties.ManagedPolicyArns
+    when %attached !empty {
+        %attached[*] != /AdministratorAccess/ <<iam-no-admin: AdministratorAccess may not be attached>>
+    }
+}

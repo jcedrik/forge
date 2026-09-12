@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  forge 01-data: one KMS key with rotation, an S3 bucket for CloudTrail and
+  ALB logs (SSE-KMS, all four public-access blocks, versioning, lifecycle),
+  a private encrypted RDS PostgreSQL instance, and its password in Secrets
+  Manager. Nothing here is reachable from outside the VPC.
+
+Parameters:
+  Project:
+    Type: String
+    Default: forge
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    Description: Free-tier eligible the first year. Check before deploying.
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub ${Project} data key (S3 logs, RDS, secrets)
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AccountAdmin
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: kms:*
+            Resource: "*"
+          - Sid: CloudTrailEncrypt
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action:
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+          - Sid: LogsEncrypt
+            Effect: Allow
+            Principal: { Service: !Sub "logs.${AWS::Region}.amazonaws.com" }
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+  KeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${Project}
+      TargetKeyId: !Ref Key
+
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub ${Project}-logs-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt Key.Arn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-logs
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: s3-access/
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: This is the access-log destination; a bucket cannot log to itself and a third bucket adds nothing.
+    Properties:
+      BucketName: !Sub ${Project}-s3-access-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt Key.Arn
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire
+            Status: Enabled
+            ExpirationInDays: 90
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LogsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt LogsBucket.Arn
+              - !Sub ${LogsBucket.Arn}/*
+            Condition:
+              Bool: { "aws:SecureTransport": "false" }
+          - Sid: CloudTrailAclCheck
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt LogsBucket.Arn
+          - Sid: CloudTrailWrite
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub ${LogsBucket.Arn}/cloudtrail/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals: { "s3:x-amz-acl": "bucket-owner-full-control" }
+          - Sid: AlbLogWrite
+            Effect: Allow
+            Principal: { Service: logdelivery.elasticloadbalancing.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub ${LogsBucket.Arn}/alb/AWSLogs/${AWS::AccountId}/*
+
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${Project}/db
+      Description: RDS master credentials, generated, never in a template
+      KmsKeyId: !Ref Key
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "forge"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: "\"@/\\'"
+  ApiTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${Project}/api-token
+      Description: Bearer token clients present to /chat
+      KmsKeyId: !Ref Key
+      GenerateSecretString:
+        PasswordLength: 40
+        ExcludePunctuation: true
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: private subnets only
+      SubnetIds: !Split [",", !ImportValue { "Fn::Sub": "${Project}-PrivateSubnets" }]
+  Db:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_157
+            comment: Multi-AZ doubles the instance cost for a demo that stores request metadata only. Accepted; see COST.md and SCALE.md.
+          - id: CKV_AWS_118
+            comment: Enhanced monitoring costs per instance-hour and this service has CloudWatch alarms on the ALB and app events instead. Accepted; see COST.md.
+    Properties:
+      DBInstanceIdentifier: !Sub ${Project}-db
+      Engine: postgres
+      EngineVersion: "17.6"
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      KmsKeyId: !Ref Key
+      PubliclyAccessible: false
+      MultiAZ: false
+      DBName: forge
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue { "Fn::Sub": "${Project}-RdsSg" }
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      AutoMinorVersionUpgrade: true
+      EnableIAMDatabaseAuthentication: true
+      EnableCloudwatchLogsExports: [postgresql]
+      CopyTagsToSnapshot: true
+      MonitoringInterval: 0
+  DbSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DbSecret
+      TargetId: !Ref Db
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  KeyArn:
+    Value: !GetAtt Key.Arn
+    Export: { Name: !Sub "${Project}-KeyArn" }
+  LogsBucketName:
+    Value: !Ref LogsBucket
+    Export: { Name: !Sub "${Project}-LogsBucket" }
+  LogsBucketArn:
+    Value: !GetAtt LogsBucket.Arn
+    Export: { Name: !Sub "${Project}-LogsBucketArn" }
+  DbSecretArn:
+    Value: !Ref DbSecret
+    Export: { Name: !Sub "${Project}-DbSecretArn" }
+  ApiTokenSecretArn:
+    Value: !Ref ApiTokenSecret
+    Export: { Name: !Sub "${Project}-ApiTokenSecretArn" }
+  DbEndpoint:
+    Value: !GetAtt Db.Endpoint.Address
+    Export: { Name: !Sub "${Project}-DbEndpoint" }

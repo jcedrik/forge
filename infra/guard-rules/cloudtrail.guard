@@ -1,0 +1,13 @@
+# forge guard rules: CloudTrail
+
+let trails = Resources.*[ Type == 'AWS::CloudTrail::Trail' ]
+
+# cloudtrail-validation: PCI DSS 10.5, NIST 800-53 AU-9
+rule cloudtrail_validation when %trails !empty {
+    %trails.Properties {
+        EnableLogFileValidation == true <<cloudtrail-validation: log file validation must be on (PCI DSS 10.5, NIST AU-9)>>
+        IsLogging == true <<cloudtrail-validation: the trail must be logging>>
+        IsMultiRegionTrail == true <<cloudtrail-validation: the trail must be multi-region>>
+        KMSKeyId exists <<cloudtrail-validation: the trail must be KMS-encrypted>>
+    }
+}

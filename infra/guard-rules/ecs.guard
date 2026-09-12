@@ -1,0 +1,21 @@
+# forge guard rules: ECS
+
+let tasks = Resources.*[ Type == 'AWS::ECS::TaskDefinition' ]
+let services = Resources.*[ Type == 'AWS::ECS::Service' ]
+
+# ecs-no-root: NIST 800-53 CM-7
+rule ecs_no_root when %tasks !empty {
+    %tasks.Properties.ContainerDefinitions[*] {
+        User exists <<ecs-no-root: every container must set a User (NIST CM-7)>>
+        User != "root" <<ecs-no-root: container runs as root (NIST CM-7)>>
+        User != "0" <<ecs-no-root: container runs as uid 0 (NIST CM-7)>>
+        User != /^0:/ <<ecs-no-root: container runs as uid 0 (NIST CM-7)>>
+        ReadonlyRootFilesystem == true <<ecs-no-root: root filesystem must be read-only (NIST CM-7)>>
+        Privileged != true <<ecs-no-root: privileged containers are not allowed (NIST CM-7)>>
+    }
+}
+
+# Companion: tasks never get a public IP; the ALB is the only public face.
+rule ecs_no_public_ip when %services !empty {
+    %services.Properties.NetworkConfiguration.AwsvpcConfiguration.AssignPublicIp == "DISABLED" <<ecs-no-public-ip: AssignPublicIp must be DISABLED>>
+}

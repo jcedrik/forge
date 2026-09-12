@@ -1,0 +1,24 @@
+# forge guard rules: S3. Each rule names the control it enforces;
+# docs/compliance-matrix.md lists them all.
+
+let buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
+
+# s3-block-public: PCI DSS 1.3, NIST 800-53 AC-3
+rule s3_block_public when %buckets !empty {
+    %buckets.Properties.PublicAccessBlockConfiguration exists
+    <<s3-block-public: every bucket needs a PublicAccessBlockConfiguration (PCI DSS 1.3, NIST AC-3)>>
+    %buckets.Properties.PublicAccessBlockConfiguration {
+        BlockPublicAcls == true <<s3-block-public: BlockPublicAcls must be true>>
+        BlockPublicPolicy == true <<s3-block-public: BlockPublicPolicy must be true>>
+        IgnorePublicAcls == true <<s3-block-public: IgnorePublicAcls must be true>>
+        RestrictPublicBuckets == true <<s3-block-public: RestrictPublicBuckets must be true>>
+    }
+}
+
+# s3-encryption: PCI DSS 3.4, ISO 27001 A.10.1
+rule s3_encryption when %buckets !empty {
+    %buckets.Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault {
+        SSEAlgorithm == "aws:kms" <<s3-encryption: buckets must default to SSE-KMS (PCI DSS 3.4, ISO 27001 A.10.1)>>
+        KMSMasterKeyID exists <<s3-encryption: a customer-managed KMS key is required>>
+    }
+}

@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  forge 03-audit: CloudTrail with log file validation into the encrypted
+  logs bucket, metric filters over the application's security events, and
+  CloudWatch alarms for 5xx rate, authentication failures and prompt
+  injection bursts. This is what the detection layer watches.
+
+Parameters:
+  Project:
+    Type: String
+    Default: forge
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional. SNS subscription for alarms.
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+
+Resources:
+  TrailLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${Project}/cloudtrail
+      RetentionInDays: 90
+      KmsKeyId: !ImportValue { "Fn::Sub": "${Project}-KeyArn" }
+  TrailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: trail-to-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${TrailLogGroup.Arn}:*
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub ${Project}-trail
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      S3BucketName: !ImportValue { "Fn::Sub": "${Project}-LogsBucket" }
+      S3KeyPrefix: cloudtrail
+      KMSKeyId: !ImportValue { "Fn::Sub": "${Project}-KeyArn" }
+      CloudWatchLogsLogGroupArn: !GetAtt TrailLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt TrailRole.Arn
+      EventSelectors:
+        - ReadWriteType: All
+          IncludeManagementEvents: true
+
+  # Flow logs: the network's own audit trail, consumed by the detection layer.
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${Project}/vpc-flow-logs
+      RetentionInDays: 30
+      KmsKeyId: !ImportValue { "Fn::Sub": "${Project}-KeyArn" }
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: vpc-flow-logs.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: write-flow-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !GetAtt FlowLogGroup.Arn
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !ImportValue { "Fn::Sub": "${Project}-VpcId" }
+      ResourceType: VPC
+      TrafficType: REJECT
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub ${Project}-alarms
+      KmsMasterKeyId: !ImportValue { "Fn::Sub": "${Project}-KeyArn" }
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # --- metric filters over the app's JSON security events ---
+  AuthFailureFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !ImportValue { "Fn::Sub": "${Project}-AppLogGroup" }
+      FilterPattern: '{ $.event = "auth.failure" }'
+      MetricTransformations:
+        - MetricNamespace: !Ref Project
+          MetricName: AuthFailures
+          MetricValue: "1"
+          DefaultValue: 0
+  InjectionFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !ImportValue { "Fn::Sub": "${Project}-AppLogGroup" }
+      FilterPattern: '{ $.event = "prompt.injection_detected" }'
+      MetricTransformations:
+        - MetricNamespace: !Ref Project
+          MetricName: PromptInjections
+          MetricValue: "1"
+          DefaultValue: 0
+  PiiRedactedFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !ImportValue { "Fn::Sub": "${Project}-AppLogGroup" }
+      FilterPattern: '{ $.event = "output.pii_redacted" }'
+      MetricTransformations:
+        - MetricNamespace: !Ref Project
+          MetricName: PiiRedactions
+          MetricValue: "1"
+          DefaultValue: 0
+
+  # --- alarms ---
+  AuthFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${Project}-auth-failures
+      AlarmDescription: more than 20 failed authentications in 5 minutes
+      Namespace: !Ref Project
+      MetricName: AuthFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 20
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  InjectionAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${Project}-prompt-injection-burst
+      AlarmDescription: 5 or more prompt injection attempts in 5 minutes
+      Namespace: !Ref Project
+      MetricName: PromptInjections
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  Alb5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${Project}-alb-5xx
+      AlarmDescription: target 5xx above 5 percent of requests over 5 minutes
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !ImportValue { "Fn::Sub": "${Project}-AlbFullName" }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+  UnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${Project}-unhealthy-hosts
+      AlarmDescription: any target unhealthy for 2 consecutive minutes
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !ImportValue { "Fn::Sub": "${Project}-AlbFullName" }
+        - Name: TargetGroup
+          Value: !ImportValue { "Fn::Sub": "${Project}-TgFullName" }
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  TrailArn:
+    Value: !GetAtt Trail.Arn
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic

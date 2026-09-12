@@ -1,0 +1,20 @@
+# forge guard rules: RDS
+
+let dbs = Resources.*[ Type == 'AWS::RDS::DBInstance' ]
+
+# rds-encrypted: PCI DSS 3.4, HIPAA 164.312(a)(2)(iv)
+rule rds_encrypted when %dbs !empty {
+    %dbs.Properties.StorageEncrypted == true <<rds-encrypted: StorageEncrypted must be true (PCI DSS 3.4, HIPAA 164.312(a)(2)(iv))>>
+    %dbs.Properties.KmsKeyId exists <<rds-encrypted: a KMS key is required>>
+}
+
+# rds-not-public: NIST 800-53 SC-7
+rule rds_not_public when %dbs !empty {
+    %dbs.Properties.PubliclyAccessible == false <<rds-not-public: no RDS instance may be PubliclyAccessible (NIST SC-7)>>
+}
+
+# Companion: the master password comes from Secrets Manager, never a literal.
+rule rds_password_from_secrets_manager when %dbs !empty {
+    # The value is {"Fn::Sub": "{{resolve:secretsmanager:...}}"}; check the Sub string.
+    %dbs.Properties.MasterUserPassword."Fn::Sub" == /resolve:secretsmanager/ <<rds-password: MasterUserPassword must be a resolve:secretsmanager reference>>
+}
