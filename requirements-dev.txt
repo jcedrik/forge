@@ -1,0 +1,6 @@
+pytest>=8
+httpx>=0.27
+ruff
+cfn-lint
+checkov
+canary-sast
