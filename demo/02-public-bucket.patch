@@ -1,0 +1,26 @@
+--- a/infra/01-data.yaml
++++ b/infra/01-data.yaml
+@@ -62,7 +62,7 @@
+     Properties:
+       BucketName: !Sub ${Project}-logs-${AWS::AccountId}-${AWS::Region}
+       PublicAccessBlockConfiguration:
+-        BlockPublicAcls: true
++        BlockPublicAcls: false
+         BlockPublicPolicy: true
+         IgnorePublicAcls: true
+         RestrictPublicBuckets: true
+--- a/infra/00-network.yaml
++++ b/infra/00-network.yaml
+@@ -139,6 +139,12 @@
+     Properties:
+       GroupDescription: ECS tasks accept traffic from the ALB only
+       VpcId: !Ref Vpc
++      SecurityGroupIngress:
++        - IpProtocol: tcp
++          FromPort: 22
++          ToPort: 22
++          CidrIp: 0.0.0.0/0
++          Description: TEMP debugging access
+       SecurityGroupEgress:
+         - IpProtocol: tcp
+           FromPort: 443

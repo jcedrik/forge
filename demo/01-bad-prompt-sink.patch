@@ -1,0 +1,18 @@
+--- a/app/main.py
++++ b/app/main.py	2026-10-10 22:07:36.185341359 -0400
+@@ -63,7 +63,15 @@
+     return not expected or token == expected
+ 
+ 
++# TEMP: quick experiment, will remove before merge
++OPENAI_API_KEY = "sk-proj-9f8e7d6c5b4a39281706f5e4d3c2b1a0ZYXWVUTSRQPONM"
++
++
+ def call_model(prompt: str) -> str:
++    # concatenate the user text straight into the system instruction
++    system_prompt = f"{SYSTEM_PROMPT} The user says: {prompt}"
++    logger_line = f"prompt={prompt}"
++    print(logger_line)
+     provider = os.environ.get("MODEL_PROVIDER", "stub")
+     if provider == "stub":
+         return f"[stub] You asked {len(prompt)} characters. Here is a careful, one-paragraph answer."
