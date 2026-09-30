@@ -1,0 +1,111 @@
+name: forge
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write   # OIDC to AWS for the deploy job
+
+env:
+  PROJECT: forge
+  AWS_REGION: ca-central-1
+
+jobs:
+  # Seven gates. Every one of them stops the pipeline; none of them warns.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -r app/requirements.txt -r requirements-dev.txt
+          curl -sSL https://github.com/aws-cloudformation/cloudformation-guard/releases/latest/download/cfn-guard-v3-x86_64-ubuntu-latest.tar.gz | tar xz
+          sudo mv cfn-guard-v3-*/cfn-guard /usr/local/bin/
+          sudo gem install cfn-nag --no-document
+
+      - name: "1. tests"
+        run: python -m pytest app/tests -q
+
+      - name: "2. canary: application code"
+        run: |
+          canary app/ --format sarif -o canary.sarif || true
+          canary app/ --fail-on high
+      - name: Upload canary SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: canary.sarif
+          category: canary
+
+      - name: "3. cfn-lint"
+        run: cfn-lint infra/*.yaml
+
+      - name: "4. cfn-nag"
+        run: cfn_nag_scan --input-path infra --template-pattern '..*\.yaml'
+
+      - name: "5. checkov"
+        run: checkov -d infra --framework cloudformation --quiet --compact --output sarif --output-file-path checkov
+      - name: Upload checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov/results_sarif.sarif
+          category: checkov
+
+      - name: "6. cfn-guard: the eight house rules"
+        run: |
+          for t in infra/0*.yaml; do cfn-guard validate -r infra/guard-rules -d "$t" --show-summary fail || exit 1; done
+
+      - name: "7. the three failure demos must fail the gates"
+        run: |
+          pip install git+https://github.com/jcedrik/triage.git
+          bash demo/run_all.sh
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (arm64, no push on PR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: app/Dockerfile
+          platforms: linux/arm64
+          push: false
+          tags: forge/api-llm:${{ github.sha }}
+
+  # Deploys only from main, only after every gate passed, through OIDC
+  # (no long-lived AWS keys in GitHub). One-time setup in RUNBOOK.md.
+  deploy:
+    needs: [verify, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Network + data stacks
+        run: |
+          make deploy-data REGION=$AWS_REGION
+      - name: Push image
+        run: make push TAG=${{ github.sha }} REGION=$AWS_REGION
+      - name: Compute + audit stacks
+        run: |
+          make deploy-audit TAG=${{ github.sha }} REGION=$AWS_REGION CERT_ARN=${{ secrets.ACM_CERTIFICATE_ARN }}
+      - name: Smoke test
+        run: make smoke REGION=$AWS_REGION
