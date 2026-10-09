@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.sarif
+checkov/
+demo/alerts.json
+demo/incident.html
+demo/incident.json
+demo/hunt.kql
+forge.db
+.env
