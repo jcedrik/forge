@@ -3,4 +3,5 @@ httpx>=0.27
 ruff
 cfn-lint
 checkov
-canary-sast @ git+https://github.com/jcedrik/canary.git@main
+canary-sast>=0.2.0
+
