@@ -36,6 +36,13 @@ PY
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 stack_delete "$PROJECT-audit"
 stack_delete "$PROJECT-compute"
+# RDS deletion protection is on (cfn_nag F80, and it is the right default).
+# Turn it off here, deliberately, right before the data stack goes.
+if aws rds describe-db-instances --region "$REGION" --db-instance-identifier "$PROJECT-db" >/dev/null 2>&1; then
+  echo "disabling deletion protection on $PROJECT-db"
+  aws rds modify-db-instance --region "$REGION" --db-instance-identifier "$PROJECT-db" --no-deletion-protection --apply-immediately >/dev/null
+  aws rds wait db-instance-available --region "$REGION" --db-instance-identifier "$PROJECT-db"
+fi
 empty_bucket "$PROJECT-logs-$ACCOUNT-$REGION"
 empty_bucket "$PROJECT-s3-access-$ACCOUNT-$REGION"
 stack_delete "$PROJECT-data"

@@ -43,6 +43,7 @@ Companion rules in the same files (not counted in the eight): `rds-password-from
 | Alarms on auth failures, prompt-injection bursts, 5xx, unhealthy hosts | `03-audit` | PCI DSS 10.4, NIST SI-4 |
 | Input guardrails, rate limiting, output PII redaction, event emission | `app/guardrails.py`, `app/events.py` | OWASP LLM01/02/05, Law 25 |
 | Data minimisation: request metadata only, never prompts or answers at rest | `app/db.py` | Law 25 art. 3.2, GDPR art. 5(1)(c) |
+| RDS deletion protection on; `destroy.sh` disables it explicitly before teardown | `01-data`, `infra/destroy.sh` | cfn_nag F80, NIST CP-9 |
 | 90-day log retention and lifecycle expiry | `01-data`, `03-audit` | PCI DSS 10.7 (minimum), Law 25 |
 
 ## Accepted exceptions (documented, not hidden)

@@ -210,7 +210,7 @@ Resources:
       VPCSecurityGroups:
         - !ImportValue { "Fn::Sub": "${Project}-RdsSg" }
       BackupRetentionPeriod: 7
-      DeletionProtection: false
+      DeletionProtection: true
       AutoMinorVersionUpgrade: true
       EnableIAMDatabaseAuthentication: true
       EnableCloudwatchLogsExports: [postgresql]
