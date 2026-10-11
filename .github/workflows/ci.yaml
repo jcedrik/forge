@@ -38,7 +38,8 @@ jobs:
           canary app/ --format sarif -o canary.sarif || true
           canary app/ --fail-on high
       - name: Upload canary SARIF
-        if: always()
+        if: success() || failure()
+        continue-on-error: true   # needs Code scanning enabled in Settings -> Code security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: canary.sarif
@@ -53,7 +54,8 @@ jobs:
       - name: "5. checkov"
         run: checkov -d infra --framework cloudformation --quiet --compact --output sarif --output-file-path checkov
       - name: Upload checkov SARIF
-        if: always()
+        if: success() || failure()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: checkov/results_sarif.sarif
@@ -65,7 +67,7 @@ jobs:
 
       - name: "7. the three failure demos must fail the gates"
         run: |
-          pip install git+https://github.com/jcedrik/triage.git
+          pip install "triage @ git+https://github.com/jcedrik/triage.git@main"
           bash demo/run_all.sh
 
   build:
