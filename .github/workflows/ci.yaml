@@ -87,10 +87,11 @@ jobs:
           tags: forge/api-llm:${{ github.sha }}
 
   # Deploys only from main, only after every gate passed, through OIDC
-  # (no long-lived AWS keys in GitHub). One-time setup in RUNBOOK.md.
+  # (no long-lived AWS keys in GitHub). One-time setup in RUNBOOK.md, then
+  # set the repository variable AWS_DEPLOY=true to switch this job on.
   deploy:
     needs: [verify, build]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.AWS_DEPLOY == 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:

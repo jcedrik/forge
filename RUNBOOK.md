@@ -91,6 +91,7 @@ deployment: `aws ecs update-service --cluster forge --service api-llm --force-ne
 1. Create an IAM OIDC provider for `token.actions.githubusercontent.com` in the account.
 2. Create a role `forge-github-deploy` trusted by that provider, condition `repo:jcedrik/forge:ref:refs/heads/main`, with the permissions CloudFormation needs for these four stacks (start from `PowerUserAccess` plus `iam:*Role*`/`iam:*Policy*` scoped to `forge-*`, then narrow with Access Analyzer after the first deploy).
 3. GitHub repo settings: environment `production` with secrets `AWS_DEPLOY_ROLE_ARN` and `ACM_CERTIFICATE_ARN`.
+4. Settings → Secrets and variables → Actions → Variables: `AWS_DEPLOY` = `true`. Until it is set, the deploy job is skipped and the pipeline is green on the seven gates alone.
 
 ## Rotate the API token
 
